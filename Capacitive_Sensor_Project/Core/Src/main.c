@@ -18,9 +18,9 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include <math.h>
 #include <stdio.h>
-#include <stdbool.h>
-#include <string.h>
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -47,7 +47,10 @@ ADC_HandleTypeDef hadc1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+#define V_REF 3.3
+#define ADC_MAX 4095.0
+#define R_DISCHARGE 1000000.0  // 1MΩ
+#define CHARGE_TIME 500  // Charge time in microseconds
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -56,7 +59,9 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
-void capacitive_input(void);
+//void capacitive_input(void);
+double get_adc_voltage();
+double measure_capacitance();
 
 /* USER CODE END PFP */
 
@@ -104,11 +109,17 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	  capacitive_input();
-//	  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_SET);
-//	  HAL_Delay(500);
-//	  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_RESET);
-//	  HAL_Delay(500);
+	    double capacitance = measure_capacitance();
+
+	    // Print capacitance
+//	    50 * pow(10, -12.0)
+	    if (capacitance > 1){
+	        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_SET);
+	    } else {
+	        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_RESET);
+	    }
+
+	    HAL_Delay(500);
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -274,6 +285,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : PA0 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
   /*Configure GPIO pin : LD2_Pin */
   GPIO_InitStruct.Pin = LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -295,26 +312,59 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void capacitive_input() {
     uint32_t adcValue = 0;
-    uint32_t adcSum = 0;
     uint32_t samples = 10; // Number of samples for averaging
 
     for (int i = 0; i < samples; i++) {
         HAL_ADC_Start(&hadc1);
         if (HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY) == HAL_OK) {
-            adcSum += HAL_ADC_GetValue(&hadc1);
+            adcValue += HAL_ADC_GetValue(&hadc1);
         }
         HAL_ADC_Stop(&hadc1);
     }
 
-    adcValue = adcSum / samples; // Compute the average
+    adcValue /= samples; // Compute the average
     printf("ADC Value: %lu\n", adcValue);
 
-    if (adcValue > 1200) {
+    if (adcValue > 500) {
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_SET);
     } else {
         HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_RESET);
     }
 
+}
+
+double get_adc_voltage() {
+    HAL_ADC_Start(&hadc1);
+    HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
+    uint32_t adcValue = HAL_ADC_GetValue(&hadc1);
+    HAL_ADC_Stop(&hadc1);
+
+    return (adcValue / ADC_MAX) * V_REF;
+}
+
+double measure_capacitance() {
+    double Vi = V_REF;
+    double Vf = 0.0;
+    double Vt;
+    uint32_t start_time = HAL_GetTick();  // Start time (ms)
+
+    // Charge the capacitor
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);  // PA0 HIGH
+    HAL_Delay(CHARGE_TIME);  // Charge for a short time
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);  // PA0 LOW (discharge)
+
+    // Measure discharge voltage
+    while (1) {
+        Vt = get_adc_voltage();
+        if (Vt < Vi * 0.37) break;  // Stop when Vt drops to 37% of Vi
+    }
+
+    uint32_t t_discharge = HAL_GetTick() - start_time;  // Time elapsed
+
+    if (Vt <= Vf) return 0.0;  // Avoid errors
+
+    double capacitance = -((double)t_discharge / 1000.0) / (R_DISCHARGE * log((Vt - Vf) / (Vi - Vf)));
+    return capacitance * 1e6;  // Convert to microfarads
 }
 
 /* USER CODE END 4 */
